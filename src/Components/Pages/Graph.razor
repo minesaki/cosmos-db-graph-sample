@@ -1,0 +1,213 @@
+﻿@page "/"
+@rendermode InteractiveServer
+@using ExRam.Gremlinq.Core
+@using Gremlin.Net.Driver
+@using Gremlin.Net.Structure.IO.GraphSON
+@using System.Text.Json
+@using Newtonsoft.Json
+@using System.Runtime.CompilerServices
+@attribute [StreamRendering]
+@inject IGremlinQuerySource g
+@inject IConfiguration Configuration
+@inject GremlinClient gremlinClient
+
+<PageTitle>GraphDB (Cosmos DB) + Gremlin</PageTitle>
+
+<h1>GraphDB (Cosmos DB) + Gremlin</h1>
+
+<p>This component demonstrates showing data.</p>
+
+<div class="my-3">
+    <div class="fw-bold">
+        Using Gremlinq
+    </div>
+    <button class="btn btn-primary" @onclick="() => OnClick(Show)">Show data</button>
+    <button class="btn btn-primary" @onclick="() => OnClick(AddData)">Add data</button>
+    <button class="btn btn-primary" @onclick="() => OnClick(DeleteAll)">Delete data</button>
+</div>
+
+<div class="my-3">
+    <div class="fw-bold">
+        Using Gremlin.Net
+    </div>
+    <InputTextArea @bind-Value="query" class="form-control" placeholder="Write Gremlin query here. Example: g.V()" />
+    <button class="btn btn-secondary" @onclick="() => OnClick(ExecuteQuery)">Query</button>
+    <button class="btn btn-secondary ms-3" @onclick="() => query = null">Clear</button>
+    <button class="btn btn-secondary ms-3" @onclick="PutSample1Query">Sample1</button>
+    <button class="btn btn-secondary" @onclick="PutSample2Query">Sample2</button>
+    <button class="btn btn-secondary" @onclick="PutSample3Query">Sample3</button>
+    <button class="btn btn-secondary ms-3" @onclick="() => OnClick(ExecSampleQueries)">Execute some queries</button>
+</div>
+
+<div>
+    Message:
+</div>
+<pre>
+@message
+</pre>
+
+<div>
+    Data:
+</div>
+@if (persons == null)
+{
+    <p><em>(This is a placeholder for Gremlinq's "Show data" result)</em></p>
+}
+else
+{
+    <table class="table">
+        <thead>
+            <tr>
+                <th>Id</th>
+                <th>Label</th>
+                <th>First Name</th>
+                <th>Last Name</th>
+                <th>Age</th>
+                <th>Partition Key</th>
+            </tr>
+        </thead>
+        <tbody>
+            @if (persons.Length == 0)
+            {
+                <tr>
+                    <td colspan="6">No persons found.</td>
+                </tr>
+            }
+            else
+            {
+                @foreach (var person in persons)
+                {
+                    <tr>
+                        <td>@person.Id</td>
+                        <td>@person.Label</td>
+                        <td>@person.FirstName</td>
+                        <td>@person.LastName</td>
+                        <td>@person.Age</td>
+                        <td>@person.partitionKey</td>
+                    </tr>
+                }
+            }
+        </tbody>
+    </table>
+}
+
+<pre>
+    @error
+</pre>
+
+
+@code {
+    private Person[]? persons = null;
+    private string? message;
+    private string? error;
+    private string? query;
+
+    // Implement startup logic here if needed
+    // protected override async Task OnInitializedAsync() { }
+
+    private async Task OnClick(Func<Task<string?>> action, [CallerArgumentExpression("action")] string? actionName = null)
+    {
+        try
+        {
+            (message, error, persons) = ($"Starting '{actionName}'", null, null);
+            string? ret = await action();
+            if (ret != null) message = $"Finished '{actionName}'. {ret}";
+        }
+        catch (Exception ex)
+        {
+            error = ex.ToString();
+        }
+    }
+
+
+    // Using Gremlinq //
+
+    private async Task<string?> Show()
+    {
+        persons = await g.V<Person>().ToArrayAsync();
+        return $"Found {persons.Length} data.";
+    }
+
+    private async Task<string?> AddData()
+    {
+        await g.AddV<Person>(new Person { Id = "john", FirstName = "John", LastName = "Doe", Age = 42 });
+        await g.AddV<Person>(new Person { Id = "jane", FirstName = "Jane", Age = 32 });
+        await g.AddV<Pet>(new Pet { Id = "janet", Type = "dog" });
+
+        await g.V<Person>("john").AddE<Knows>(new(){ Relationship = "friend" }).To(_ => _.V<Person>("jane"));
+        await g.V<Person>("jane").AddE<Owns>().To(_ => _.V<Pet>("janet"));
+
+        await Show();
+
+        return "Data added.";
+    }
+
+    private async Task<string?> DeleteAll()
+    {
+        await g.V().Drop();
+
+        await Show();
+
+        return "All data deleted.";
+    }
+
+
+    // Using Gremlin.Net //
+
+    private async Task<string?> ExecuteQuery()
+    {
+        if (query == null) return "No query to execute.";
+        var results = await gremlinClient.SubmitAsync<dynamic>(query);
+        return "\n" + JsonConvert.SerializeObject(results, Formatting.Indented);
+    }
+
+    private void PutSample1Query()
+    {
+        query = "g.addV('Person').property('id', 'tom').property('firstName', 'Tom').property('partitionKey', 'pk')";
+    }
+
+    private void PutSample2Query()
+    {
+        query = "g.V('tom').addE('knows').to(g.V('ben'))";
+    }
+
+    private void PutSample3Query()
+    {
+        query = "g.V('tom').repeat(out()).until(has('id', 'robin')).path()";
+    }
+
+    private async Task<string?> ExecSampleQueries()
+    {
+        foreach (var query in gremlinQueries)
+        {
+            message += $"\n[{query.Key}] {query.Value}";
+            var results = await gremlinClient.SubmitAsync<dynamic>(query.Value);
+            message += $"\n  => Result:{string.Join(", ", results.Select(r => JsonConvert.SerializeObject(r)))}";
+        }
+        return null;
+    }
+
+    private Dictionary<string, string> gremlinQueries = new()
+    {
+        { "Cleanup",        "g.V().drop()" },
+        { "AddVertex 1",    "g.addV('Person').property('id', 'thomas').property('firstName', 'Thomas').property('age', 44).property('partitionKey', 'pk')" },
+        { "AddVertex 2",    "g.addV('Person').property('id', 'mary').property('firstName', 'Mary').property('lastName', 'Andersen').property('age', 39).property('partitionKey', 'pk')" },
+        { "AddVertex 3",    "g.addV('Person').property('id', 'ben').property('firstName', 'Ben').property('partitionKey', 'pk')" },
+        { "AddVertex 4",    "g.addV('Person').property('id', 'robin').property('firstName', 'Robin').property('lastName', 'Wakefield').property('partitionKey', 'pk')" },
+        { "AddEdge 1",      "g.V('thomas').addE('knows').to(g.V('mary'))" },
+        { "AddEdge 2",      "g.V('thomas').addE('knows').to(g.V('ben'))" },
+        { "AddEdge 3",      "g.V('ben').addE('knows').to(g.V('robin'))" },
+        { "UpdateVertex",   "g.V('thomas').property('age', 44)" },
+        { "CountVertices",  "g.V().count()" },
+        { "Filter Range",   "g.V().hasLabel('Person').has('age', gt(40))" },
+        { "Project",        "g.V().hasLabel('Person').values('firstName')" },
+        { "Sort",           "g.V().hasLabel('Person').order().by('firstName', decr)" },
+        { "Traverse",       "g.V('thomas').out('knows').hasLabel('Person')" },
+        { "Traverse 2x",    "g.V('thomas').out('knows').hasLabel('Person').out('knows').hasLabel('Person')" },
+        { "Loop",           "g.V('thomas').repeat(out()).until(has('id', 'robin')).path()" },
+        { "DropEdge",       "g.V('thomas').outE('knows').where(inV().has('id', 'mary')).drop()" },
+        { "CountEdges",     "g.E().count()" },
+        { "DropVertex",     "g.V('mary').drop()" },
+    };
+
+}
